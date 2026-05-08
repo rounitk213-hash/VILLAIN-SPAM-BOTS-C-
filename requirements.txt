@@ -1,6 +1,6 @@
-# Build dependencies
-cmake>=3.16
-g++>=11
+g++
+make
 libcurl4-openssl-dev
 libssl-dev
-nlohmann-json3-dev
+ca-certificates
+curl
