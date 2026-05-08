@@ -1,26 +1,21 @@
 FROM ubuntu:22.04 AS builder
 
-# Install dependencies
 RUN apt-get update && apt-get install -y \
-    g++-11 \
+    g++ \
     make \
-    cmake \
     libcurl4-openssl-dev \
     libssl-dev \
     curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-11 100
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
-# Copy source
-COPY villain.bin /app/villain.cpp
+COPY villain.cpp /app/villain.cpp
 COPY config.env /app/config.env
 
-# Compile
-RUN g++ -O3 -march=native -mtune=native -pthread -lcurl -lssl -lcrypto -o userbot villain.cpp
+# Compile with optimizations (without -march=native for compatibility)
+RUN g++ -O3 -pthread -lcurl -lssl -lcrypto -o userbot villain.cpp
 
-# Final stage
 FROM ubuntu:22.04
 
 RUN apt-get update && apt-get install -y \
