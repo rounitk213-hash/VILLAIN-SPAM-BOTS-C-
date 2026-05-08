@@ -1,4 +1,4 @@
-// bot.cpp - Complete C++ Userbot with all features
+// bot.cpp - Complete C++ Userbot (No external HTTP library needed)
 #include <iostream>
 #include <string>
 #include <vector>
@@ -17,15 +17,10 @@
 #include <regex>
 #include <algorithm>
 #include <iomanip>
-
-#ifdef _WIN32
-#include <winsock2.h>
-#include <windows.h>
-#else
+#include <netdb.h>
 #include <unistd.h>
-#include <curl/curl.h>
-#include <sys/stat.h>
-#endif
+#include <sys/socket.h>
+#include <arpa/inet.h>
 
 using namespace std::chrono;
 
@@ -87,13 +82,9 @@ struct BotState {
     double delay;
     int64_t target_raid_user;
     int64_t target_chat;
-    std::chrono::steady_clock::time_point last_msg_time;
-    time_t start_time;
     
     BotState() : raid_active(false), fr_active(false), cs_active(false), rr_active(false), 
-                 delay(0.3), target_raid_user(0), target_chat(0) {
-        start_time = time(nullptr);
-    }
+                 delay(0.3), target_raid_user(0), target_chat(0) {}
 };
 
 // ==================== GLOBAL VARIABLES ====================
@@ -112,36 +103,6 @@ void stopForceRaid(int session_id);
 void stopReplyRaid(int session_id);
 void stopCustomReply(int session_id);
 void stopAllOperations(int session_id);
-
-// ==================== HTTP HELPER ====================
-#ifdef __linux__
-size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* output) {
-    size_t total = size * nmemb;
-    output->append((char*)contents, total);
-    return total;
-}
-
-std::string httpGet(const std::string& url) {
-    CURL* curl = curl_easy_init();
-    std::string response;
-    
-    if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);
-        
-        CURLcode res = curl_easy_perform(curl);
-        if (res != CURLE_OK) {
-            response = "";
-        }
-        curl_easy_cleanup(curl);
-    }
-    return response;
-}
-#endif
 
 // ==================== HELPER FUNCTIONS ====================
 std::string makeMention(int64_t user_id, const std::string& name = "") {
@@ -192,7 +153,7 @@ std::string getTimestamp() {
     auto now = std::chrono::system_clock::now();
     auto time_t_now = std::chrono::system_clock::to_time_t(now);
     std::stringstream ss;
-    ss << std::put_time(std::localtime(&time_t_now), "%Y-%m-%d %H:%M:%S");
+    ss << std::put_time(std::localtime(&time_t_now), "%H:%M:%S");
     return ss.str();
 }
 
@@ -200,7 +161,7 @@ void logMessage(const std::string& level, const std::string& message) {
     std::cout << "[" << getTimestamp() << "] [" << level << "] " << message << std::endl;
 }
 
-// ==================== SEND MESSAGE ====================
+// ==================== SEND MESSAGE (Mock - Replace with actual Telegram API) ====================
 void sendMessage(int session_id, int64_t chat_id, const std::string& text, 
                  int64_t reply_to = 0, const std::vector<int64_t>& mentions = {}) {
     std::string final_text = text;
@@ -211,7 +172,7 @@ void sendMessage(int session_id, int64_t chat_id, const std::string& text,
         }
     }
     
-    logMessage("SEND", "Session " + std::to_string(session_id) + " -> Chat " + std::to_string(chat_id) + ": " + final_text.substr(0, 100));
+    logMessage("SEND", "Session " + std::to_string(session_id) + " -> Chat " + std::to_string(chat_id) + ": " + final_text.substr(0, 80) + "...");
     
     std::this_thread::sleep_for(std::chrono::milliseconds(SEND_DELAY_MS));
 }
@@ -309,7 +270,7 @@ void handleRaid(int session_id, int64_t chat_id, int64_t target_id) {
             count++;
             
             if (count % 100 == 0) {
-                logMessage("INFO", "Raid sent " + std::to_string(count) + " messages to target " + std::to_string(target_id));
+                logMessage("INFO", "Raid sent " + std::to_string(count) + " messages");
             }
             
             double delay = states[session_id].delay;
@@ -317,7 +278,6 @@ void handleRaid(int session_id, int64_t chat_id, int64_t target_id) {
                 std::this_thread::sleep_for(std::chrono::milliseconds((int)(delay * 1000)));
             }
         }
-        logMessage("INFO", "Raid stopped for session " + std::to_string(session_id));
     }).detach();
     
     logMessage("INFO", "🔥 RAID ACTIVATED | Session " + std::to_string(session_id) + " | Target: " + std::to_string(target_id));
@@ -369,20 +329,20 @@ void handleReplyRaid(int session_id, int64_t chat_id, const std::vector<int64_t>
     states[session_id].rr_targets = targets;
     states[session_id].rr_active = true;
     
-    logMessage("INFO", "🎯 REPLY RAID ACTIVATED | Session " + std::to_string(session_id) + " | " + std::to_string(targets.size()) + " targets | " + std::to_string(count) + " replies each");
+    logMessage("INFO", "🎯 REPLY RAID ACTIVATED | " + std::to_string(targets.size()) + " targets | " + std::to_string(count) + " replies each");
 }
 
 void handleCustomReply(int session_id, int64_t chat_id, const std::string& message) {
     states[session_id].cs_reply[chat_id] = message;
     states[session_id].cs_active = true;
-    logMessage("INFO", "💬 CUSTOM REPLY ACTIVATED | Session " + std::to_string(session_id) + " | Chat: " + std::to_string(chat_id));
+    logMessage("INFO", "💬 CUSTOM REPLY ACTIVATED | Chat: " + std::to_string(chat_id));
 }
 
 void setSpeed(int session_id, double delay) {
     if (delay < 0.1) delay = 0.1;
     if (delay > 10) delay = 10;
     states[session_id].delay = delay;
-    logMessage("INFO", "⚡ Speed set to " + std::to_string(delay) + "s for session " + std::to_string(session_id));
+    logMessage("INFO", "⚡ Speed set to " + std::to_string(delay) + "s");
 }
 
 // ==================== STATS ====================
@@ -433,8 +393,6 @@ void loadConfig() {
             API_HASH = value;
         } else if (key == "MAIN_OWNER") {
             MAIN_OWNER = std::stoll(value);
-        } else if (key == "AUTO_JOIN_LINK") {
-            AUTO_JOIN_LINK = value;
         } else if (key == "SEND_DELAY_MS") {
             SEND_DELAY_MS = std::stoi(value);
         } else if (key.find("SESSION_") == 0) {
@@ -446,7 +404,6 @@ void loadConfig() {
                 s.session_string = value.substr(0, sep);
                 s.owner = std::stoll(value.substr(sep + 2));
                 s.active = true;
-                s.connected = false;
                 SESSIONS.push_back(s);
             }
         }
@@ -470,55 +427,36 @@ void initializeSessions() {
 
 // ==================== SHOW BANNER ====================
 void showBanner() {
-    std::cout << "\n" << std::string(70, '=') << std::endl;
+    std::cout << "\n" << std::string(60, '=') << std::endl;
     std::cout << "   🔥 VILLAIN USERBOT - C++ ULTRA FAST 🔥" << std::endl;
-    std::cout << std::string(70, '=') << std::endl;
-    std::cout << "   ⚡ Language: C++20" << std::endl;
-    std::cout << "   🚀 Speed: " << SEND_DELAY_MS << "ms per message" << std::endl;
-    std::cout << "   💾 Memory: ~50MB" << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    std::cout << "   ⚡ Speed: " << SEND_DELAY_MS << "ms per message" << std::endl;
     std::cout << "   👑 Owner: " << MAIN_OWNER << std::endl;
-    std::cout << "   📱 Sessions Loaded: " << SESSIONS.size() << std::endl;
-    std::cout << std::string(70, '=') << std::endl;
+    std::cout << "   📱 Sessions: " << SESSIONS.size() << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
 }
 
 void showHelp() {
-    std::cout << "\n📌 COMMAND REFERENCE:" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "🎯 RAID COMMANDS:" << std::endl;
-    std::cout << "   .fr ID1 ID2\\nYour message  - Force Raid" << std::endl;
-    std::cout << "   .ra @username           - Normal Raid" << std::endl;
-    std::cout << "   .rr5 @username          - Reply Raid (5 times)" << std::endl;
-    std::cout << "   .cs Your message        - Custom Auto Reply" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "🛑 STOP COMMANDS:" << std::endl;
-    std::cout << "   .over                   - STOP EVERYTHING" << std::endl;
-    std::cout << "   .stopfr                 - Stop Force Raid" << std::endl;
-    std::cout << "   .stopra                 - Stop Raid" << std::endl;
-    std::cout << "   .stoprr                 - Stop Reply Raid" << std::endl;
-    std::cout << "   .stopcs                 - Stop Custom Reply" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "⚙️ SETTINGS:" << std::endl;
-    std::cout << "   .dly 0.5                - Set speed (0.1-10s)" << std::endl;
-    std::cout << "   .ping                   - Check latency" << std::endl;
-    std::cout << "   .stats                  - System stats" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "💡 Current Speed: " << states[0].delay << "s" << std::endl;
-    std::cout << "💡 Click on any mention to open profile" << std::endl;
+    std::cout << "\n📌 COMMANDS:" << std::endl;
+    std::cout << "   .fr ID1 ID2\\nMessage - Force Raid" << std::endl;
+    std::cout << "   .ra @user - Normal Raid" << std::endl;
+    std::cout << "   .rr5 @user - Reply Raid" << std::endl;
+    std::cout << "   .cs msg - Custom Reply" << std::endl;
+    std::cout << "   .over - STOP ALL" << std::endl;
+    std::cout << "   .stopfr - Stop FR" << std::endl;
+    std::cout << "   .stopra - Stop Raid" << std::endl;
+    std::cout << "   .dly 0.5 - Set speed" << std::endl;
+    std::cout << "   .stats - System stats" << std::endl;
 }
 
 // ==================== MAIN ====================
 int main() {
-    #ifdef __linux__
-    curl_global_init(CURL_GLOBAL_ALL);
-    #endif
-    
     loadConfig();
     showBanner();
     
     if (SESSIONS.empty()) {
         std::cerr << "\n❌ No sessions loaded!" << std::endl;
-        std::cerr << "Add SESSION_0 in config.env" << std::endl;
-        std::cerr << "Format: SESSION_0=session_string||owner_id\n" << std::endl;
+        std::cerr << "Add SESSION_0=string||owner_id in config.env" << std::endl;
         return 1;
     }
     
@@ -528,11 +466,10 @@ int main() {
     std::cout << "🟢 Bot is running..." << std::endl;
     showHelp();
     
-    std::cout << "\n💡 Interactive Mode: Type commands or numbers:" << std::endl;
+    std::cout << "\n💡 Type numbers:" << std::endl;
     std::cout << "   1 - Start Test Raid" << std::endl;
-    std::cout << "   2 - Stop All Operations" << std::endl;
+    std::cout << "   2 - Stop All" << std::endl;
     std::cout << "   3 - Show Stats" << std::endl;
-    std::cout << "   4 - Show Help" << std::endl;
     std::cout << "   0 - Exit\n" << std::endl;
     
     std::string input;
@@ -548,40 +485,25 @@ int main() {
             std::string target;
             std::getline(std::cin, target);
             try {
-                int64_t target_id = std::stoll(target);
-                handleRaid(session_id, -1001234567, target_id);
-                std::cout << "✅ Test raid started on target: " << target_id << std::endl;
+                handleRaid(session_id, -1001234567, std::stoll(target));
+                std::cout << "✅ Raid started!" << std::endl;
             } catch (...) {
-                std::cout << "❌ Invalid target ID" << std::endl;
+                std::cout << "❌ Invalid ID" << std::endl;
             }
         } else if (input == "2") {
             stopAllOperations(session_id);
-            std::cout << "✅ All operations stopped" << std::endl;
+            std::cout << "✅ Stopped" << std::endl;
         } else if (input == "3") {
             showGlobalStats();
-        } else if (input == "4") {
-            showHelp();
-        } else if (input == "0" || input == "exit") {
+        } else if (input == "0") {
             running = false;
         } else if (input == ".stats") {
             showGlobalStats();
         } else if (input == ".over") {
             stopAllOperations(session_id);
-            std::cout << "✅ All operations stopped" << std::endl;
-        } else if (input.find(".dly ") == 0) {
-            try {
-                double dly = std::stod(input.substr(5));
-                setSpeed(session_id, dly);
-                std::cout << "✅ Speed set to " << dly << "s" << std::endl;
-            } catch (...) {
-                std::cout << "❌ Invalid delay value" << std::endl;
-            }
-        } else if (!input.empty() && input != "help") {
-            if (input != "?" && input != ".help") {
-                std::cout << "Unknown command. Type '4' for help." << std::endl;
-            } else {
-                showHelp();
-            }
+            std::cout << "✅ Stopped" << std::endl;
+        } else if (!input.empty()) {
+            std::cout << "Unknown. Type 0-3." << std::endl;
         }
     }
     
@@ -591,14 +513,9 @@ int main() {
     for (auto& [idx, cv] : queue_cvs) {
         cv.notify_all();
     }
-    
     for (auto& [idx, worker] : workers) {
         if (worker.joinable()) worker.join();
     }
-    
-    #ifdef __linux__
-    curl_global_cleanup();
-    #endif
     
     std::cout << "\n👋 Shutdown complete!" << std::endl;
     return 0;
