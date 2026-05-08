@@ -9,13 +9,6 @@ libssl-dev
 ca-certificates
 curl
 
-# For Alpine Linux:
-# g++
-# make
-# libcurl-dev
-# openssl-dev
-# curl
-
 # Runtime dependencies:
 # libcurl4
 # libssl3
