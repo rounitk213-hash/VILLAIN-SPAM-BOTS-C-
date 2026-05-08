@@ -12,18 +12,16 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy files
 COPY bot.cpp /app/bot.cpp
 COPY config.env /app/config.env
 
 # Compile
 RUN g++ -O3 -pthread -lcurl -lssl -lcrypto -o userbot bot.cpp
 
-# Create user
+# Create non-root user
 RUN groupadd -r userbot && useradd -r -g userbot userbot && \
     chown -R userbot:userbot /app
 
 USER userbot
 
-# Run
 CMD ["./userbot"]
