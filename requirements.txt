@@ -1,0 +1,30 @@
+# System Requirements (for C++ compilation)
+# Install these on Ubuntu/Debian:
+
+build-essential
+g++ >= 11
+make
+cmake >= 3.16
+libcurl4-openssl-dev
+libssl-dev
+pkg-config
+curl
+ca-certificates
+
+# For Alpine Linux:
+# g++
+# make
+# libcurl-dev
+# openssl-dev
+# curl
+
+# For Arch Linux:
+# base-devel
+# gcc
+# curl
+# openssl
+
+# Libraries needed at runtime:
+# libcurl4
+# libssl3
+# libstdc++6
