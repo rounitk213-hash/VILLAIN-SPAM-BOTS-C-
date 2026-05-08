@@ -45,8 +45,7 @@ std::vector<std::string> ABUSE_ROAST = {
     "𝗧𝗘𝗥𝗜 𝗠𝗔𝗔 𝗞𝗜 𝗖𝗛𝗨𝗧 𝗠𝗘𝗜𝗡 𝟭𝟬𝟬𝟬 𝗟𝗔𝗧𝗛𝗜 𝗗𝗔𝗔𝗟 𝗞𝗔𝗥 𝗖𝗛𝗨𝗗𝗔𝗜 𝗞𝗥𝗨𝗡𝗚𝗔",
     "𝗧𝗘𝗥𝗜 𝗕𝗘𝗛𝗡 𝗞𝗜 𝗖𝗛𝗨𝗧 𝗠𝗘𝗜𝗡 𝗔𝗚 𝗟𝗚𝗔 𝗞𝗔𝗥 𝟱𝟬𝟬 𝗟𝗜𝗧𝗔𝗥 𝗣𝗘𝗧𝗥𝗢𝗟 𝗗𝗔𝗔𝗟𝗨𝗡𝗚𝗔",
     "MADARCHOD", "BENCHOD", "RANDI KE PILLE",
-    "TERI MAA KO CHOD DUNGA", "BHOSDIKE", "CHUTIYA",
-    "CHAL BE RANDI KE PILLE", "BHAG BSdk", "LAUDE LAG GYE"
+    "TERI MAA KO CHOD DUNGA", "BHOSDIKE", "CHUTIYA"
 };
 
 // ==================== SESSION STRUCTURE ====================
@@ -108,10 +107,11 @@ std::atomic<int> active_sessions{0};
 std::chrono::steady_clock::time_point program_start = std::chrono::steady_clock::now();
 
 // ==================== FORWARD DECLARATIONS ====================
-void stopForceRaid(int session_id);
 void stopRaid(int session_id);
+void stopForceRaid(int session_id);
 void stopReplyRaid(int session_id);
 void stopCustomReply(int session_id);
+void stopAllOperations(int session_id);
 
 // ==================== HTTP HELPER ====================
 #ifdef __linux__
@@ -210,8 +210,6 @@ void sendMessage(int session_id, int64_t chat_id, const std::string& text,
             final_text += makeMention(uid) + " ";
         }
     }
-    
-    std::string encoded = urlEncode(final_text);
     
     logMessage("SEND", "Session " + std::to_string(session_id) + " -> Chat " + std::to_string(chat_id) + ": " + final_text.substr(0, 100));
     
@@ -478,7 +476,6 @@ void showBanner() {
     std::cout << "   ⚡ Language: C++20" << std::endl;
     std::cout << "   🚀 Speed: " << SEND_DELAY_MS << "ms per message" << std::endl;
     std::cout << "   💾 Memory: ~50MB" << std::endl;
-    std::cout << "   📡 Max Concurrent: " << MAX_CONCURRENT << " tasks" << std::endl;
     std::cout << "   👑 Owner: " << MAIN_OWNER << std::endl;
     std::cout << "   📱 Sessions Loaded: " << SESSIONS.size() << std::endl;
     std::cout << std::string(70, '=') << std::endl;
@@ -492,7 +489,6 @@ void showHelp() {
     std::cout << "   .ra @username           - Normal Raid" << std::endl;
     std::cout << "   .rr5 @username          - Reply Raid (5 times)" << std::endl;
     std::cout << "   .cs Your message        - Custom Auto Reply" << std::endl;
-    std::cout << "   .ta message             - Tag All Members" << std::endl;
     std::cout << std::string(50, '-') << std::endl;
     std::cout << "🛑 STOP COMMANDS:" << std::endl;
     std::cout << "   .over                   - STOP EVERYTHING" << std::endl;
@@ -505,16 +501,6 @@ void showHelp() {
     std::cout << "   .dly 0.5                - Set speed (0.1-10s)" << std::endl;
     std::cout << "   .ping                   - Check latency" << std::endl;
     std::cout << "   .stats                  - System stats" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "🔧 UTILITY:" << std::endl;
-    std::cout << "   .join link              - Join channel" << std::endl;
-    std::cout << "   .joinleft link          - Leave channel" << std::endl;
-    std::cout << "   .pg                     - Purge messages" << std::endl;
-    std::cout << std::string(50, '-') << std::endl;
-    std::cout << "👑 SUDO COMMANDS:" << std::endl;
-    std::cout << "   .sudo 123456789         - Add sudo user" << std::endl;
-    std::cout << "   .delsudo 123456789      - Remove sudo" << std::endl;
-    std::cout << "   .sudolist               - List sudo users" << std::endl;
     std::cout << std::string(50, '-') << std::endl;
     std::cout << "💡 Current Speed: " << states[0].delay << "s" << std::endl;
     std::cout << "💡 Click on any mention to open profile" << std::endl;
