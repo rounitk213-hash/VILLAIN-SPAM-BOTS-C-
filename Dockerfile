@@ -1,22 +1,29 @@
 FROM ubuntu:22.04
 
+# Install dependencies
 RUN apt-get update && apt-get install -y \
     g++ \
     make \
+    libcurl4-openssl-dev \
+    libssl-dev \
     ca-certificates \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 
+# Copy files
 COPY bot.cpp /app/bot.cpp
 COPY config.env /app/config.env
 
-RUN g++ -O3 -pthread -o userbot bot.cpp
+# Compile
+RUN g++ -O3 -pthread -lcurl -lssl -lcrypto -o userbot bot.cpp
 
+# Create user
 RUN groupadd -r userbot && useradd -r -g userbot userbot && \
-    chown -R userbot:userbot /app && \
-    chmod +x /app/userbot
+    chown -R userbot:userbot /app
 
 USER userbot
 
-ENTRYPOINT ["/app/userbot"]
+# Run
+CMD ["./userbot"]
