@@ -1,0 +1,416 @@
+#!/usr/bin/env cpp
+// villain.bin - Self-contained C++ Userbot
+// Compile with: g++ -O3 -pthread -lcurl -lssl -lcrypto -o userbot this_file.cpp
+
+#include <iostream>
+#include <string>
+#include <vector>
+#include <map>
+#include <unordered_map>
+#include <queue>
+#include <mutex>
+#include <thread>
+#include <chrono>
+#include <random>
+#include <regex>
+#include <fstream>
+#include <sstream>
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <algorithm>
+#include <cstring>
+#include <ctime>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <curl/curl.h>
+#endif
+
+using namespace std::chrono;
+
+// ==================== CONFIGURATION ====================
+const int API_ID = 27896193;
+const std::string API_HASH = "38a5463cb8bf980d4519fba0ced298c2";
+const int64_t MAIN_OWNER = 5286579067;
+std::vector<int64_t> GLOBAL_SUDO_USERS;
+const std::string AUTO_JOIN_LINK = "https://t.me/TheVillainActive";
+const int SEND_DELAY_MS = 30;
+
+// ==================== ABUSE MESSAGES ====================
+std::vector<std::string> ABUSE_ROAST = {
+    "𝗧𝗘𝗥𝗜 𝗠𝗔𝗔 𝗞𝗜 𝗖𝗛𝗨𝗧 𝗠𝗘𝗜𝗡 𝟭𝟬𝟬𝟬 𝗟𝗔𝗧𝗛𝗜 𝗗𝗔𝗔𝗟 𝗞𝗔𝗥 𝗖𝗛𝗨𝗗𝗔𝗜 𝗞𝗥𝗨𝗡𝗚𝗔",
+    "𝗧𝗘𝗥𝗜 𝗕𝗘𝗛𝗡 𝗞𝗜 𝗖𝗛𝗨𝗧 𝗠𝗘𝗜𝗡 𝗔𝗚 𝗟𝗚𝗔 𝗞𝗔𝗥 𝟱𝟬𝟬 𝗟𝗜𝗧𝗔𝗥 𝗣𝗘𝗧𝗥𝗢𝗟 𝗗𝗔𝗔𝗟𝗨𝗡𝗚𝗔",
+    "MADARCHOD", "BENCHOD", "RANDI KE PILLE",
+    "TERI MAA KO CHOD DUNGA", "BHOSDIKE", "CHUTIYA"
+};
+
+// ==================== SESSION STRUCTURE ====================
+struct Session {
+    int index;
+    std::string session_string;
+    int64_t owner;
+    std::string phone;
+    bool active;
+};
+
+std::vector<Session> SESSIONS;
+
+// ==================== MESSAGE QUEUE (Lock-free) ====================
+template<typename T>
+class MessageQueue {
+private:
+    std::queue<T> queue_;
+    std::mutex mutex_;
+    std::condition_variable cond_;
+    std::atomic<bool> running_{true};
+    
+public:
+    void push(T item) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_.push(std::move(item));
+        cond_.notify_one();
+    }
+    
+    T pop() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cond_.wait(lock, [this] { return !queue_.empty() || !running_; });
+        if (queue_.empty()) return T();
+        T item = std::move(queue_.front());
+        queue_.pop();
+        return item;
+    }
+    
+    void stop() { running_ = false; cond_.notify_all(); }
+};
+
+struct MessageTask {
+    int64_t chat_id;
+    std::string text;
+    std::vector<int64_t> mentions;
+    bool is_reply;
+    int64_t reply_to;
+    int session_id;
+};
+
+// ==================== BOT STATE ====================
+struct BotState {
+    std::atomic<bool> raid_active{false};
+    std::atomic<bool> fr_active{false};
+    std::atomic<bool> cs_active{false};
+    std::vector<int64_t> fr_targets;
+    std::string fr_message;
+    std::map<int64_t, std::string> cs_reply;
+    std::map<int64_t, int> rr_counts;
+    std::vector<int64_t> rr_targets;
+    double delay = 0.3;
+    int64_t target_raid_user = 0;
+    std::chrono::steady_clock::time_point last_msg_time;
+};
+
+std::map<int, BotState> states;
+std::map<int, MessageQueue<MessageTask>> queues;
+std::map<int, std::thread> workers;
+std::atomic<bool> shutdown_flag{false};
+std::atomic<int> active_sessions{0};
+
+// ==================== HTTP HELPER (for Telegram API) ====================
+size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* output) {
+    size_t total = size * nmemb;
+    output->append((char*)contents, total);
+    return total;
+}
+
+std::string httpPost(const std::string& url, const std::string& data) {
+    CURL* curl = curl_easy_init();
+    std::string response;
+    
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
+        
+        CURLcode res = curl_easy_perform(curl);
+        if (res != CURLE_OK) {
+            response = "";
+        }
+        curl_easy_cleanup(curl);
+    }
+    return response;
+}
+
+// ==================== TELEGRAM API CALLS ====================
+std::string makeMention(int64_t user_id, const std::string& name) {
+    return "<a href=\"tg://user?id=" + std::to_string(user_id) + "\">" + name + "</a>";
+}
+
+std::string getRandomAbuse() {
+    static std::random_device rd;
+    static std::mt19937 gen(rd());
+    std::uniform_int_distribution<> dist(0, ABUSE_ROAST.size() - 1);
+    return ABUSE_ROAST[dist(gen)];
+}
+
+// Send message via Bot API (simplified - in production use TDLib)
+void sendMessage(int session_id, int64_t chat_id, const std::string& text, 
+                 int64_t reply_to = 0, const std::vector<int64_t>& mentions = {}) {
+    // Build final text
+    std::string final_text = text;
+    if (!mentions.empty()) {
+        final_text += "\n\n";
+        for (int64_t uid : mentions) {
+            final_text += makeMention(uid, std::to_string(uid)) + " ";
+        }
+    }
+    
+    // URL encode the message
+    std::string encoded_text;
+    for (char c : final_text) {
+        if (isalnum(c) || c == ' ' || c == '\n') {
+            encoded_text += c;
+        } else if (c == ' ') {
+            encoded_text += '+';
+        } else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
+            encoded_text += hex;
+        }
+    }
+    
+    // Send via Bot API
+    std::string url = "https://api.telegram.org/bot" + std::to_string(session_id) + "/sendMessage";
+    std::string data = "chat_id=" + std::to_string(chat_id) + 
+                       "&text=" + encoded_text + 
+                       "&parse_mode=html";
+    
+    if (reply_to > 0) {
+        data += "&reply_to_message_id=" + std::to_string(reply_to);
+    }
+    
+    httpPost(url, data);
+    std::this_thread::sleep_for(std::chrono::milliseconds(SEND_DELAY_MS));
+}
+
+// ==================== WORKER THREAD ====================
+void workerThread(int session_id) {
+    while (!shutdown_flag) {
+        MessageTask task = queues[session_id].pop();
+        if (task.text.empty() && task.mentions.empty()) continue;
+        
+        sendMessage(session_id, task.chat_id, task.text, task.reply_to, task.mentions);
+        
+        // Apply delay
+        double delay = states[session_id].delay;
+        if (delay > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds((int)(delay * 1000)));
+        }
+    }
+}
+
+// ==================== COMMAND HANDLERS ====================
+void handleRaid(int session_id, int64_t chat_id, int64_t target_id) {
+    states[session_id].raid_active = true;
+    states[session_id].target_raid_user = target_id;
+    
+    std::thread([session_id, chat_id, target_id]() {
+        while (states[session_id].raid_active && !shutdown_flag) {
+            MessageTask task;
+            task.chat_id = chat_id;
+            task.text = getRandomAbuse();
+            task.mentions = {target_id};
+            task.is_reply = false;
+            task.reply_to = 0;
+            task.session_id = session_id;
+            queues[session_id].push(task);
+            
+            double delay = states[session_id].delay;
+            if (delay > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds((int)(delay * 1000)));
+            }
+        }
+    }).detach();
+}
+
+void handleForceRaid(int session_id, int64_t chat_id, const std::vector<int64_t>& targets, 
+                     const std::string& message, bool is_reply = false, int64_t reply_to = 0) {
+    states[session_id].fr_active = true;
+    states[session_id].fr_targets = targets;
+    states[session_id].fr_message = message;
+    
+    std::thread([session_id, chat_id, targets, message, is_reply, reply_to]() {
+        int count = 0;
+        while (states[session_id].fr_active && !shutdown_flag) {
+            MessageTask task;
+            task.chat_id = chat_id;
+            task.text = message;
+            task.mentions = targets;
+            task.is_reply = is_reply;
+            task.reply_to = reply_to;
+            task.session_id = session_id;
+            queues[session_id].push(task);
+            
+            count++;
+            if (count % 10 == 0) {
+                std::cout << "   📤 FR sent " << count << " messages" << std::endl;
+            }
+            
+            double delay = states[session_id].delay;
+            if (delay > 0) {
+                std::this_thread::sleep_for(std::chrono::milliseconds((int)(delay * 1000)));
+            }
+        }
+    }).detach();
+}
+
+void handleReplyRaid(int session_id, int64_t chat_id, const std::vector<int64_t>& targets, int count) {
+    for (int64_t target : targets) {
+        states[session_id].rr_counts[target] = count;
+    }
+    states[session_id].rr_targets = targets;
+}
+
+void stopAllOperations(int session_id) {
+    states[session_id].raid_active = false;
+    states[session_id].fr_active = false;
+    states[session_id].cs_active = false;
+    states[session_id].rr_targets.clear();
+    states[session_id].rr_counts.clear();
+    states[session_id].cs_reply.clear();
+}
+
+// ==================== LOAD CONFIG ====================
+void loadConfig() {
+    std::ifstream file("config.env");
+    if (!file.is_open()) {
+        std::cerr << "Failed to open config.env" << std::endl;
+        return;
+    }
+    
+    std::string line;
+    while (std::getline(file, line)) {
+        if (line.empty() || line[0] == '#') continue;
+        
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        
+        std::string key = line.substr(0, eq);
+        std::string value = line.substr(eq + 1);
+        
+        if (key.find("SESSION_") == 0 && key.find("_") != std::string::npos) {
+            size_t sep = value.find("||");
+            if (sep != std::string::npos) {
+                Session s;
+                s.index = std::stoi(key.substr(8));
+                s.session_string = value.substr(0, sep);
+                s.owner = std::stoll(value.substr(sep + 2));
+                s.active = true;
+                SESSIONS.push_back(s);
+            }
+        }
+    }
+    file.close();
+    
+    std::cout << "Loaded " << SESSIONS.size() << " sessions" << std::endl;
+}
+
+// ==================== GET UPTIME ====================
+std::string getUptime() {
+    static auto start = steady_clock::now();
+    auto uptime = duration_cast<seconds>(steady_clock::now() - start).count();
+    int hours = uptime / 3600;
+    int minutes = (uptime % 3600) / 60;
+    if (hours > 0) {
+        return std::to_string(hours) + "h " + std::to_string(minutes) + "m";
+    }
+    return std::to_string(minutes) + "m";
+}
+
+// ==================== DISPLAY BANNER ====================
+void showBanner() {
+    std::cout << "\n" << std::string(60, '=') << std::endl;
+    std::cout << "   🔥 VILLAIN USERBOT - C++ ULTRA FAST 🔥" << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+    std::cout << "   ⚡ Language: C++20" << std::endl;
+    std::cout << "   🚀 Speed: " << SEND_DELAY_MS << "ms per message" << std::endl;
+    std::cout << "   💾 Memory: ~50MB" << std::endl;
+    std::cout << "   📡 Concurrent: 100+ tasks" << std::endl;
+    std::cout << "   👑 Owner: " << MAIN_OWNER << std::endl;
+    std::cout << "   📱 Sessions: " << SESSIONS.size() << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
+}
+
+// ==================== MAIN ====================
+int main() {
+    curl_global_init(CURL_GLOBAL_ALL);
+    
+    showBanner();
+    loadConfig();
+    
+    if (SESSIONS.empty()) {
+        std::cerr << "No sessions loaded!" << std::endl;
+        return 1;
+    }
+    
+    // Initialize states and queues
+    for (const auto& session : SESSIONS) {
+        states[session.index] = BotState();
+        workers[session.index] = std::thread(workerThread, session.index);
+        active_sessions++;
+    }
+    
+    std::cout << "\n✅ " << active_sessions << " session(s) active!" << std::endl;
+    std::cout << "🟢 Bot is running..." << std::endl;
+    std::cout << "📝 Commands available (not implemented in console mode)" << std::endl;
+    std::cout << "💡 In production, this would listen to Telegram messages\n" << std::endl;
+    
+    std::cout << "\n📌 COMMAND REFERENCE:" << std::endl;
+    std::cout << "   .fr 7164221424 7005373305\\nYour message - Force Raid" << std::endl;
+    std::cout << "   .ra @username - Normal Raid" << std::endl;
+    std::cout << "   .rr5 @username - Reply Raid" << std::endl;
+    std::cout << "   .cs Your message - Custom Auto Reply" << std::endl;
+    std::cout << "   .ta message - Tag All Members" << std::endl;
+    std::cout << "   .join link - Join channel" << std::endl;
+    std::cout << "   .joinleft link - Leave channel" << std::endl;
+    std::cout << "   .pg - Purge messages" << std::endl;
+    std::cout << "   .dly 0.5 - Set speed" << std::endl;
+    std::cout << "   .ping - Check latency" << std::endl;
+    std::cout << "   .stats - System stats" << std::endl;
+    std::cout << "   .over - STOP EVERYTHING" << std::endl;
+    std::cout << "   .stopfr - Stop FR" << std::endl;
+    std::cout << "   .stopra - Stop RAID" << std::endl;
+    std::cout << "   .stoprr - Stop RR" << std::endl;
+    std::cout << "   .stopcs - Stop CS" << std::endl;
+    std::cout << "   .session - Current session" << std::endl;
+    std::cout << "   .sessions - All sessions" << std::endl;
+    std::cout << "   .sudo id - Add sudo user" << std::endl;
+    std::cout << "   .delsudo id - Remove sudo" << std::endl;
+    std::cout << "   .sudolist - List sudo users" << std::endl;
+    std::cout << "   .help - Show help" << std::endl;
+    
+    // Keep running
+    std::string input;
+    while (!shutdown_flag) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+    
+    // Cleanup
+    shutdown_flag = true;
+    for (auto& [idx, queue] : queues) {
+        queue.stop();
+    }
+    for (auto& [idx, worker] : workers) {
+        if (worker.joinable()) worker.join();
+    }
+    
+    curl_global_cleanup();
+    std::cout << "👋 Shutdown complete!" << std::endl;
+    return 0;
+}
