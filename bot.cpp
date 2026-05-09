@@ -15,9 +15,7 @@
 #include <algorithm>
 #include <ctime>
 #include <cstring>
-
-#include <curl/curl.h>
-#include <openssl/sha.h>
+#include <cstdlib>
 
 using namespace std::chrono;
 
@@ -46,59 +44,6 @@ std::vector<std::string> ABUSE_LIST = {
     "TERI MAA KO CHOD DUNGA", "BHOSDIKE", "CHUTIYA",
     "CHAL BE RANDI KE PILLE", "BHAG BSDK"
 };
-
-// ==================== HTTP HELPER ====================
-size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* output) {
-    size_t total = size * nmemb;
-    output->append((char*)contents, total);
-    return total;
-}
-
-std::string urlEncode(const std::string& str) {
-    std::string encoded;
-    for (char c : str) {
-        if (isalnum(c) || c == ' ' || c == '\n' || c == '.' || c == '_' || c == '-' || c == '@') {
-            if (c == ' ') encoded += '+';
-            else encoded += c;
-        } else {
-            char hex[4];
-            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
-            encoded += hex;
-        }
-    }
-    return encoded;
-}
-
-std::string httpGet(const std::string& url) {
-    CURL* curl = curl_easy_init();
-    std::string response;
-    if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_perform(curl);
-        curl_easy_cleanup(curl);
-    }
-    return response;
-}
-
-std::string httpPost(const std::string& url, const std::string& data) {
-    CURL* curl = curl_easy_init();
-    std::string response;
-    if (curl) {
-        curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
-        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, data.c_str());
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, 10L);
-        curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);
-        curl_easy_perform(curl);
-        curl_easy_cleanup(curl);
-    }
-    return response;
-}
 
 // ==================== HELPER FUNCTIONS ====================
 bool isAuthorized(int session_id, int64_t user_id) {
@@ -134,10 +79,8 @@ void logMessage(const std::string& level, const std::string& msg) {
     std::cout << "[" << getTimestamp() << "] [" << level << "] " << msg << std::endl;
 }
 
-// ==================== SEND MESSAGE ====================
+// ==================== SEND MESSAGE (Simulated) ====================
 void sendMessage(int session_id, int64_t chat_id, const std::string& text, int64_t reply_to = 0) {
-    std::string encoded = urlEncode(text);
-    
     logMessage("SEND", "Chat " + std::to_string(chat_id) + ": " + text.substr(0, 100));
     
     // Simulate sending delay
@@ -259,13 +202,12 @@ void loadConfig() {
 void processCommand(int session_id, int64_t chat_id, int64_t user_id, const std::string& cmd) {
     if (!isAuthorized(session_id, user_id)) {
         logMessage("WARN", "Unauthorized command from " + std::to_string(user_id));
-        sendMessage(session_id, chat_id, "❌ You are not authorized to use this bot!");
         return;
     }
     
     logMessage("CMD", "From " + std::to_string(user_id) + ": " + cmd);
     
-    // .help
+    // .help or .start
     if (cmd == ".help" || cmd == ".start") {
         std::string help = 
             "🔥 VILLAIN USERBOT - C++ EDITION 🔥\n\n"
@@ -321,14 +263,6 @@ void processCommand(int session_id, int64_t chat_id, int64_t user_id, const std:
         return;
     }
     
-    // .ra @username
-    std::regex ra_username_regex(R"(\.ra\s+@(\w+))");
-    if (std::regex_search(cmd, match, ra_username_regex) && match.size() > 1) {
-        std::string username = match[1];
-        sendMessage(session_id, chat_id, "⚠️ Please use numeric user ID for raid. Use @username to get ID first.");
-        return;
-    }
-    
     // .dly 0.5
     std::regex dly_regex(R"(\.dly\s+(\d+\.?\d*))");
     if (std::regex_search(cmd, match, dly_regex) && match.size() > 1) {
@@ -374,7 +308,7 @@ void messageProcessor() {
     }
 }
 
-// ==================== SIMULATED INPUT ====================
+// ==================== INPUT HANDLER ====================
 void inputHandler(int session_id) {
     std::string input;
     logMessage("INFO", "Bot ready! Type commands below:");
@@ -419,19 +353,19 @@ void showBanner() {
     std::cout << "   👑 Owner: " << MAIN_OWNER << std::endl;
     std::cout << "   📱 Sessions: " << SESSIONS.size() << std::endl;
     std::cout << std::string(60, '=') << std::endl;
+    std::cout << "   📝 Commands are processed via console input" << std::endl;
+    std::cout << "   💡 In production, connect to Telegram API" << std::endl;
+    std::cout << std::string(60, '=') << std::endl;
 }
 
 // ==================== MAIN ====================
 int main() {
-    curl_global_init(CURL_GLOBAL_ALL);
-    
     loadConfig();
     showBanner();
     
     if (SESSIONS.empty()) {
         std::cout << "\n❌ No sessions loaded!" << std::endl;
         std::cout << "Please add SESSION_0 in config.env" << std::endl;
-        curl_global_cleanup();
         return 1;
     }
     
@@ -462,8 +396,6 @@ int main() {
     running = false;
     queueCV.notify_all();
     if (processor.joinable()) processor.join();
-    
-    curl_global_cleanup();
     
     std::cout << "\n👋 Shutdown complete!" << std::endl;
     return 0;
