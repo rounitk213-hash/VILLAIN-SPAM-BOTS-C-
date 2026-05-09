@@ -36,7 +36,7 @@ fi
 
 if [ ! -f "./userbot" ] || [ "bot.cpp" -nt "./userbot" ]; then
     echo -e "${YELLOW}[!] Compiling...${NC}"
-    g++ -O3 -pthread -lcurl -lssl -lcrypto -o userbot bot.cpp
+    g++ -O3 -pthread -o userbot bot.cpp -lcurl -lssl -lcrypto
     echo -e "${GREEN}[✓] Compilation complete!${NC}"
 fi
 
