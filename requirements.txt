@@ -4,3 +4,4 @@ libcurl4-openssl-dev
 libssl-dev
 ca-certificates
 curl
+pkg-config
